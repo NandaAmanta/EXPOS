@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\PosCashMovement;
 use App\Models\PosOrder;
 use App\Models\PosOutlet;
 use App\Models\PosPayment;
@@ -17,7 +18,7 @@ class PosShiftController extends Controller
     {
         $outletId = $request->query('outlet_id') ?: PosOutlet::query()->value('id');
 
-        $activeShift = PosShift::with('user')
+        $activeShift = PosShift::with(['user', 'cashMovements.user'])
             ->where('status', 'open')
             ->when($outletId, fn ($q) => $q->where('outlet_id', $outletId))
             ->latest('opened_at')
@@ -67,6 +68,38 @@ class PosShiftController extends Controller
         ], 201);
     }
 
+    public function cashMovement(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'shift_id' => 'required|uuid|exists:pos_shifts,id',
+            'type' => 'required|in:in,out',
+            'amount' => 'required|numeric|min:0.01',
+            'reason' => 'required|string|max:255',
+            'user_id' => 'nullable|uuid',
+        ]);
+
+        $shift = PosShift::findOrFail($validated['shift_id']);
+        if ($shift->status !== 'open') {
+            return response()->json(['message' => 'Shift is not open.'], 422);
+        }
+
+        $movement = PosCashMovement::create([
+            'id' => Str::uuid()->toString(),
+            'tenant_id' => $shift->tenant_id ?? 'tenant-uuid-001',
+            'outlet_id' => $shift->outlet_id,
+            'shift_id' => $shift->id,
+            'user_id' => $validated['user_id'] ?? $request->user()?->id,
+            'type' => $validated['type'],
+            'amount' => $validated['amount'],
+            'reason' => $validated['reason'],
+        ]);
+
+        return response()->json([
+            'message' => 'Cash movement recorded successfully.',
+            'cash_movement' => $movement,
+        ], 201);
+    }
+
     public function close(Request $request, string $id): JsonResponse
     {
         $shift = PosShift::findOrFail($id);
@@ -92,7 +125,11 @@ class PosShiftController extends Controller
             ->where('payment_method', 'CASH')
             ->sum('amount');
 
-        $expectedCash = (float) $shift->starting_cash + (float) $cashSales;
+        // Calculate petty cash in and out
+        $cashIn = $shift->cashMovements()->where('type', 'in')->sum('amount');
+        $cashOut = $shift->cashMovements()->where('type', 'out')->sum('amount');
+
+        $expectedCash = (float) $shift->starting_cash + (float) $cashSales + (float) $cashIn - (float) $cashOut;
         $actualCash = (float) $validated['actual_cash'];
         $difference = $actualCash - $expectedCash;
 

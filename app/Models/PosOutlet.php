@@ -20,6 +20,8 @@ class PosOutlet extends Model
         'code',
         'address',
         'phone',
+        'receipt_header',
+        'receipt_footer',
         'is_active',
     ];
 
@@ -40,5 +42,30 @@ class PosOutlet extends Model
     public function orders(): HasMany
     {
         return $this->hasMany(PosOrder::class, 'outlet_id');
+    }
+
+    public function ingredientStocks(): HasMany
+    {
+        return $this->hasMany(PosIngredientStock::class, 'outlet_id');
+    }
+
+    public function productStocks(): HasMany
+    {
+        return $this->hasMany(PosProductStock::class, 'outlet_id');
+    }
+
+    public function stockMovements(): HasMany
+    {
+        return $this->hasMany(PosStockMovement::class, 'outlet_id');
+    }
+
+    public function userOutlets(): HasMany
+    {
+        return $this->hasMany(UserOutlet::class, 'outlet_id');
+    }
+
+    public function staffMembers(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'user_outlets', 'outlet_id', 'user_id')->withPivot('is_primary');
     }
 }

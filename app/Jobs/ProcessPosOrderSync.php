@@ -60,7 +60,23 @@ class ProcessPosOrderSync implements ShouldQueue
                     $product = PosProduct::where('sku', $sku)->first();
 
                     // Security Guard: enforce official catalog price if product exists
-                    $unitPrice = $product ? (float) $product->price : (float) ($item['unit_price'] ?? $item['price'] ?? 0);
+                    $unitPrice = (float) ($item['unit_price'] ?? $item['price'] ?? 0);
+                    if ($product) {
+                        $unitPrice = (float) $product->price;
+                        if (!empty($item['selected_variant']) && !empty($product->variants) && is_array($product->variants)) {
+                            foreach ($product->variants as $variant) {
+                                if (is_array($variant) && isset($variant['name']) && $variant['name'] === $item['selected_variant']) {
+                                    if (isset($variant['price']) && is_numeric($variant['price'])) {
+                                        $unitPrice = (float) $variant['price'];
+                                    } elseif (isset($variant['additional_price']) && is_numeric($variant['additional_price'])) {
+                                        $unitPrice = (float) $product->price + (float) $variant['additional_price'];
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     $lineSubtotal = $qty * $unitPrice;
                     $calculatedSubtotal += $lineSubtotal;
 
@@ -72,6 +88,8 @@ class ProcessPosOrderSync implements ShouldQueue
                         'product_name' => $product ? $product->name : ($item['product_name'] ?? $item['name'] ?? 'Product'),
                         'qty' => $qty,
                         'unit_price' => $unitPrice,
+                        'selected_variant' => $item['selected_variant'] ?? null,
+                        'notes' => $item['notes'] ?? $item['item_notes'] ?? null,
                         'subtotal' => $lineSubtotal,
                         'product_model' => $product,
                     ];
@@ -80,7 +98,11 @@ class ProcessPosOrderSync implements ShouldQueue
 
             $discountAmount = (float) ($data['discount_amount'] ?? 0);
             $taxAmount = (float) ($data['tax_amount'] ?? 0);
-            $calculatedTotal = max(0, $calculatedSubtotal - $discountAmount + $taxAmount);
+            $chargesAmount = (float) ($data['charges_amount'] ?? 0);
+            $chargesDetail = $data['charges_detail'] ?? null;
+            $taxRate = isset($data['tax_rate']) ? (float) $data['tax_rate'] : null;
+            $taxName = $data['tax_name'] ?? null;
+            $calculatedTotal = max(0, $calculatedSubtotal - $discountAmount + $chargesAmount + $taxAmount);
 
             // Automatic Shift Resolution:
             $orderOutletId = $data['outlet_id'] ?? $defaultOutletId;
@@ -107,16 +129,28 @@ class ProcessPosOrderSync implements ShouldQueue
             }
 
             // 2. Create Order
+            $cashierId = $data['cashier_id'] ?? $data['user_id'] ?? null;
+            if (!$cashierId && $shiftId) {
+                $cashierId = PosShift::where('id', $shiftId)->value('user_id');
+            }
+
             $order = PosOrder::create([
                 'id' => $orderId,
                 'tenant_id' => $data['tenant_id'] ?? $this->tenantId ?? 'tenant-uuid-001',
                 'outlet_id' => $orderOutletId,
-                'user_id' => $data['cashier_id'] ?? $data['user_id'] ?? null,
+                'user_id' => $cashierId,
                 'shift_id' => $shiftId,
                 'order_number' => $data['order_number'],
+                'order_type' => $data['order_type'] ?? 'dine_in',
+                'table_number' => $data['table_number'] ?? null,
+                'notes' => $data['notes'] ?? null,
                 'customer_name' => $data['customer_name'] ?? null,
                 'subtotal' => $calculatedSubtotal,
+                'tax_rate' => $taxRate,
+                'tax_name' => $taxName,
                 'tax_amount' => $taxAmount,
+                'charges_amount' => $chargesAmount,
+                'charges_detail' => $chargesDetail,
                 'discount_amount' => $discountAmount,
                 'total_amount' => $calculatedTotal,
                 'payment_status' => $data['payment_status'] ?? 'paid',
@@ -124,7 +158,7 @@ class ProcessPosOrderSync implements ShouldQueue
                 'erp_sync_status' => 'standalone',
             ]);
 
-            // 3. Save items & decrement stock
+            // 3. Save items & decrement stock (Supports BOM Recipe Deduction & Multi-Branch Stock Ledger)
             foreach ($verifiedItems as $itemData) {
                 $productModel = $itemData['product_model'];
                 unset($itemData['product_model']);
@@ -132,7 +166,91 @@ class ProcessPosOrderSync implements ShouldQueue
                 PosOrderItem::create($itemData);
 
                 if ($productModel) {
-                    $productModel->decrement('stock', $itemData['qty']);
+                    $selectedVariant = $itemData['selected_variant'] ?? null;
+
+                    // Cek apakah produk memiliki formula resep (BOM)
+                    $recipes = $productModel->recipes()
+                        ->when($selectedVariant, function ($query, $variant) {
+                            $query->where(function ($q) use ($variant) {
+                                $q->whereNull('variant_name')->orWhere('variant_name', $variant);
+                            });
+                        })
+                        ->get();
+
+                    if ($recipes->isNotEmpty()) {
+                        // PRODUK OLAHAN / RECIPE ITEM: Kurangi stok bahan baku cabang
+                        foreach ($recipes as $recipe) {
+                            $qtyNeeded = (float) $recipe->quantity * (int) $itemData['qty'];
+
+                            $ingStock = \App\Models\PosIngredientStock::firstOrCreate(
+                                [
+                                    'outlet_id' => $orderOutletId,
+                                    'ingredient_id' => $recipe->ingredient_id,
+                                ],
+                                [
+                                    'current_stock' => 0,
+                                    'min_stock_alert' => 100,
+                                ]
+                            );
+
+                            $balanceBefore = (float) $ingStock->current_stock;
+                            $balanceAfter = $balanceBefore - $qtyNeeded;
+
+                            $ingStock->update(['current_stock' => $balanceAfter]);
+
+                            // Catat mutasi kartu stok bahan baku
+                            \App\Models\PosStockMovement::create([
+                                'id' => Str::uuid()->toString(),
+                                'tenant_id' => $data['tenant_id'] ?? $this->tenantId ?? 'default-tenant',
+                                'outlet_id' => $orderOutletId,
+                                'item_type' => 'ingredient',
+                                'item_id' => $recipe->ingredient_id,
+                                'type' => 'sale',
+                                'quantity' => -$qtyNeeded,
+                                'balance_before' => $balanceBefore,
+                                'balance_after' => $balanceAfter,
+                                'reference_id' => $order->id,
+                                'reference_type' => 'pos_order',
+                                'notes' => "Terjual {$itemData['qty']}x {$productModel->name}" . ($selectedVariant ? " ({$selectedVariant})" : ""),
+                                'user_id' => $cashierId,
+                            ]);
+                        }
+                    } else {
+                        // PRODUK RETAIL LANGSUNG: Kurangi stok barang jadi cabang & umum
+                        $prodStock = \App\Models\PosProductStock::firstOrCreate(
+                            [
+                                'outlet_id' => $orderOutletId,
+                                'product_id' => $productModel->id,
+                            ],
+                            [
+                                'current_stock' => (int) $productModel->stock,
+                                'min_stock_alert' => 5,
+                            ]
+                        );
+
+                        $balanceBefore = (float) $prodStock->current_stock;
+                        $balanceAfter = $balanceBefore - (int) $itemData['qty'];
+
+                        $prodStock->update(['current_stock' => $balanceAfter]);
+                        $productModel->decrement('stock', $itemData['qty']);
+
+                        // Catat mutasi kartu stok barang jadi
+                        \App\Models\PosStockMovement::create([
+                            'id' => Str::uuid()->toString(),
+                            'tenant_id' => $data['tenant_id'] ?? $this->tenantId ?? 'default-tenant',
+                            'outlet_id' => $orderOutletId,
+                            'item_type' => 'product',
+                            'item_id' => $productModel->id,
+                            'type' => 'sale',
+                            'quantity' => -$itemData['qty'],
+                            'balance_before' => $balanceBefore,
+                            'balance_after' => $balanceAfter,
+                            'reference_id' => $order->id,
+                            'reference_type' => 'pos_order',
+                            'notes' => "Terjual {$itemData['qty']}x {$productModel->name}" . ($selectedVariant ? " ({$selectedVariant})" : ""),
+                            'user_id' => $cashierId,
+                        ]);
+                    }
                 }
             }
 

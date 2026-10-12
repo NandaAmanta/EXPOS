@@ -1,0 +1,31 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class UserOutlet extends Model
+{
+    protected $table = 'user_outlets';
+
+    protected $fillable = [
+        'user_id',
+        'outlet_id',
+        'is_primary',
+    ];
+
+    protected $casts = [
+        'is_primary' => 'boolean',
+    ];
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function outlet(): BelongsTo
+    {
+        return $this->belongsTo(PosOutlet::class, 'outlet_id');
+    }
+}

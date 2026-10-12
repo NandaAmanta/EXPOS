@@ -17,7 +17,8 @@ class PosAuthController extends Controller
     {
         $cashiers = User::query()
             ->select('id', 'name', 'email', 'role')
-            ->whereIn('role', ['cashier', 'admin'])
+            ->where('is_active', true)
+            ->whereIn('role', ['cashier', 'admin', 'manager'])
             ->orderBy('name')
             ->get();
 

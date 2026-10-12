@@ -40,3 +40,12 @@ void createInertiaApp({
 
 // This will set light / dark mode on load...
 initializeTheme();
+
+// Register Service Worker for offline PWA support
+if ('serviceWorker' in navigator && typeof window !== 'undefined') {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker
+            .register('/sw.js')
+            .catch((err) => console.warn('PWA SW registration failed:', err));
+    });
+}

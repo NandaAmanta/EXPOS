@@ -35,11 +35,43 @@ class HandleInertiaRequests extends Middleware
      */
     public function share(Request $request): array
     {
+        $user = $request->user();
+        $activeOutletId = $request->session()->get('active_outlet_id');
+
+        $outlets = [];
+        $activeOutlet = null;
+
+        if ($user) {
+            $isGlobalAdmin = in_array($user->role, ['admin', 'owner']);
+            if ($isGlobalAdmin) {
+                $outlets = \App\Models\PosOutlet::where('is_active', true)->get(['id', 'code', 'name', 'address', 'phone']);
+            } else {
+                $outlets = $user->assignedOutlets()->where('is_active', true)->get(['pos_outlets.id', 'code', 'name', 'address', 'phone']);
+                if ($outlets->isEmpty() && $user->outlet_id) {
+                    $outlets = \App\Models\PosOutlet::where('id', $user->outlet_id)->where('is_active', true)->get(['id', 'code', 'name', 'address', 'phone']);
+                }
+                if ($outlets->isEmpty()) {
+                    $outlets = \App\Models\PosOutlet::where('is_active', true)->get(['id', 'code', 'name', 'address', 'phone']);
+                }
+            }
+
+            if ($activeOutletId && $activeOutletId !== 'all') {
+                $activeOutlet = $outlets->firstWhere('id', $activeOutletId);
+            }
+        }
+
         return [
             ...parent::share($request),
             'name' => config('app.name'),
             'auth' => [
-                'user' => $request->user(),
+                'user' => $user,
+            ],
+            'outlets' => $outlets,
+            'active_outlet_id' => $activeOutletId,
+            'active_outlet' => $activeOutlet,
+            'flash' => [
+                'success' => $request->session()->get('success'),
+                'error' => $request->session()->get('error'),
             ],
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
         ];

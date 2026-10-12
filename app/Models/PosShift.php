@@ -52,4 +52,9 @@ class PosShift extends Model
     {
         return $this->hasMany(PosOrder::class, 'shift_id');
     }
+
+    public function cashMovements(): HasMany
+    {
+        return $this->hasMany(PosCashMovement::class, 'shift_id');
+    }
 }

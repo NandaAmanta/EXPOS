@@ -27,11 +27,25 @@ export default function LockScreen({
 
     useEffect(() => {
         if (isOpen) {
+            try {
+                const cached = localStorage.getItem('pos_cached_cashiers');
+                if (cached) {
+                    const list = JSON.parse(cached);
+                    setCashiers(list);
+                    if (!selectedCashier && list.length > 0) {
+                        setSelectedCashier(list[0]);
+                    }
+                }
+            } catch {}
+
             fetch('/api/pos/auth/cashiers')
                 .then((res) => res.json())
                 .then((data) => {
                     if (data.cashiers && data.cashiers.length > 0) {
                         setCashiers(data.cashiers);
+                        try {
+                            localStorage.setItem('pos_cached_cashiers', JSON.stringify(data.cashiers));
+                        } catch {}
                         if (!selectedCashier && !currentCashier) {
                             setSelectedCashier(data.cashiers[0]);
                         }

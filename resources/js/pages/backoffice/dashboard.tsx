@@ -13,6 +13,7 @@ import {
     ArrowRight
 } from 'lucide-react';
 import type { PosShift } from '@/types/pos';
+import SalesLineChart, { type TrendItem } from './components/sales-line-chart';
 
 interface DashboardProps {
     summary: {
@@ -22,6 +23,16 @@ interface DashboardProps {
         avg_order_value: number;
         active_shift: PosShift | null;
     };
+    sales_trend?: TrendItem[];
+    hourly_trend?: TrendItem[];
+    chart_summary?: {
+        revenue_7d: number;
+        orders_7d: number;
+        revenue_30d: number;
+        orders_30d: number;
+        peak_revenue: number;
+        peak_date: string | null;
+    };
     recent_orders: any[];
     low_stock_products: any[];
     top_selling: any[];
@@ -29,6 +40,9 @@ interface DashboardProps {
 
 export default function Dashboard({
     summary,
+    sales_trend = [],
+    hourly_trend = [],
+    chart_summary,
     recent_orders,
     low_stock_products,
     top_selling,
@@ -113,6 +127,15 @@ export default function Dashboard({
                         </span>
                     </div>
                 </div>
+            </div>
+
+            {/* Line Chart Section: Live Sales Trend */}
+            <div className="mb-6">
+                <SalesLineChart
+                    salesTrend={sales_trend}
+                    hourlyTrend={hourly_trend}
+                    chartSummary={chart_summary}
+                />
             </div>
 
             {/* Split Content: Recent Orders vs Stock & Best Sellers */}

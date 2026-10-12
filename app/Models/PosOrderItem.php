@@ -21,6 +21,8 @@ class PosOrderItem extends Model
         'product_name',
         'qty',
         'unit_price',
+        'selected_variant',
+        'notes',
         'subtotal',
     ];
 

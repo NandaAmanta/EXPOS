@@ -1,10 +1,11 @@
 import Dexie, { type Table } from 'dexie';
-import type { PosOrderPayload, PosProduct, PosShift } from '@/types/pos';
+import type { ParkedOrder, PosCharge, PosOrderPayload, PosProduct, PosShift, PosTax } from '@/types/pos';
 
 export class ExpPosDatabase extends Dexie {
     products!: Table<PosProduct, string>;
     shifts!: Table<PosShift, string>;
     orders!: Table<PosOrderPayload, string>;
+    parked_orders!: Table<ParkedOrder, string>;
 
     constructor() {
         super('ExpPosLocalDb');
@@ -12,6 +13,9 @@ export class ExpPosDatabase extends Dexie {
             products: 'id, sku, barcode, category, name, price',
             shifts: 'id, status, opened_at',
             orders: 'id, order_number, is_synced, created_at',
+        });
+        this.version(2).stores({
+            parked_orders: 'id, order_number, created_at',
         });
     }
 }
@@ -106,3 +110,69 @@ export async function getTodayLocalOrders(): Promise<PosOrderPayload[]> {
     const all = await posDb.orders.toArray();
     return all.filter((o) => o.created_at.startsWith(today));
 }
+
+/**
+ * Park (hold) order temporarily
+ */
+export async function parkLocalOrder(order: ParkedOrder): Promise<void> {
+    await posDb.parked_orders.put(order);
+}
+
+/**
+ * Get all parked orders sorted by latest
+ */
+export async function getParkedOrders(): Promise<ParkedOrder[]> {
+    try {
+        return await posDb.parked_orders.reverse().sortBy('created_at');
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Remove parked order once resumed or cancelled
+ */
+export async function removeParkedOrder(id: string): Promise<void> {
+    await posDb.parked_orders.delete(id);
+}
+
+/**
+ * Cache active taxes for offline POS calculations
+ */
+export async function cacheTaxes(taxes: PosTax[]): Promise<void> {
+    try {
+        localStorage.setItem('pos_cached_taxes', JSON.stringify(taxes));
+    } catch (e) {
+        console.warn('Failed to cache taxes:', e);
+    }
+}
+
+export function getLocalTaxes(): PosTax[] {
+    try {
+        const stored = localStorage.getItem('pos_cached_taxes');
+        return stored ? JSON.parse(stored) : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Cache active charges for offline POS calculations
+ */
+export async function cacheCharges(charges: PosCharge[]): Promise<void> {
+    try {
+        localStorage.setItem('pos_cached_charges', JSON.stringify(charges));
+    } catch (e) {
+        console.warn('Failed to cache charges:', e);
+    }
+}
+
+export function getLocalCharges(): PosCharge[] {
+    try {
+        const stored = localStorage.getItem('pos_cached_charges');
+        return stored ? JSON.parse(stored) : [];
+    } catch {
+        return [];
+    }
+}
+
